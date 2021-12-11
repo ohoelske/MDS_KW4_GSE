@@ -1,5 +1,5 @@
 ---
-title: "Gene-set enrichment analysis"
+title: "Gene-Set Enrichment Analysis (GSEA)"
 author: "Oliver Hölsken"
 date: "12.12.2021"
 output: html_document
