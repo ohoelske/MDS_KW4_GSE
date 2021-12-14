@@ -1,380 +1,519 @@
 ---
-title: "Gene-Set Enrichment Analysis (GSEA)"
+title: "Generally Applicable Gene-set Enrichment (GAGE)"
 author: "Oliver Hölsken"
 date: "12.12.2021"
-output: html_document
+output:
+  html_document: default
+  pdf_document: default
+  github_document: default
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## Preparing the working environment
+The github repository can be found [here](https://github.com/ohoelske/MDS_KW4_GSE)
 
-### Install Bioconductor
+# Set up Working environment
 
-```{r}
+## Installations
+```{r, message=FALSE,warning=FALSE}
 if(!requireNamespace("BiocManager", quietly = TRUE))
   install.packages("BiocManager")
 BiocManager::install(version = "3.14")
 ```
 
-### Install required BioConductor packages
-
-```{r}
-BiocManager::install(c('DESeq2', 'glmpca', 'EnhancedVolcano'))
+```{r, message=FALSE,warning=FALSE}
+#BiocManager::install(c("gage", "org.Hs.eg.db", "clusterProfiler"))
 ```
 
-```{r}
-library(BiocManager)
+```{r, message=FALSE,warning=FALSE}
+#install.packages("msigdbr")
+```
 
+## Load libraries
+```{r,  message=FALSE,warning=FALSE}
+library(BiocManager)
 library(ggplot2)
 library(ggrepel)
-library(genefilter)
-
 library(dplyr)
 library(tibble)
 library(readr)
-library(FactoMineR)
 library(tidyr)
+library(tidyverse)
+library(msigdbr)
+library(clusterProfiler)
+library(fgsea)
+library(gage)
+library(org.Hs.eg.db)
 ```
 
-## Perform Differential expression analysis
+## Tasks
 
-### Generate a DESeq2 Data Set
+### Part 1: Getting familiar with Gene-sets
 
+The Hallmark get can be found [here](https://www.gsea-msigdb.org/gsea/msigdb/genesets.jsp?collection=H).
+
+1. Download Hallmark gene-sets using the `msigdbr` R package.
 ```{r}
-countMat <- Expression_data$countMat
-ann <- Expression_data$ann
-condition <- ann$condition
-geneMat <- Expression_data$geneMat
-```
-
-```{r}
-library(DESeq2)
-```
-
-```{r}
-###### Excluding low/ none expressed genes
-keep <- rowSums(countMat > 0) >= 3 
-
-# BUILD DESEQ DATA
-dds <- DESeqDataSetFromMatrix(countData = countMat[keep, ],
-                              colData = ann,
-                              design = ~ condition)
+#Check available gene sets using msigdbr_collections()
+msigdbr_collections()
 ```
 
 ```{r}
-mcols(dds) <- DataFrame(mcols(dds), geneMat[keep, ])
+# get Human H (Hallmark) gene sets
+h_gene_set <- msigdbr(species = "human", 
+                      category = "H")
+head(h_gene_set)
+# get Human Reactome gene sets
+r_gene_set <- msigdbr(species = "human", 
+                      category = "C2",
+                      subcategory = "CP:REACTOME")
+head(h_gene_set)
+head(r_gene_set)
+```
+2.	Look at Hallmark: check the number of gene-sets, number of genes per gene set…
+
+```{r}
+# Create a nested data (list-column of a data frame) 
+n_h_gene_set <- h_gene_set %>%
+  group_by(gs_name) %>%
+  nest()
+# Count no of rows = gene sets
+nrow(n_h_gene_set)
+```
+The Hallmark Datasets contains 50 Gene-sets
+```{r}
+#Extract the Gene-set names 
+Gene_set_name <- n_h_gene_set$gs_name
+head(Gene_set_name)
 ```
 
 ```{r}
-# GET COUNT
-dds <- estimateSizeFactors(dds)
-dds.counts <- counts(dds, normalized=TRUE)
+#Define no of Genes per Gene set by using the purrr::map function
+Genes_per_Gene_set <- map_int(my_list, ~nrow(.))
 ```
 
 ```{r}
-# get normalized rlogs
-rld <- rlogTransformation(dds, blind=TRUE)
-rlds <- assay(rld)
-```
-
-## PCA Analyse
-
-Dies dient der Visualisierung von Sample-Sample Abständen. Die Datenpunkte werden in einer 2D Projektion geplottet. Diese Richtungen können die Unterschiede der Proben erklären.
-
-### GLM-PCA
-
-Steht für generalized PCA. Das Package heißt glmpca (Twones et al. 2019). Als Input werden die counts verwendet. Es vermeidet die Probleme, die bei der Normalisierng auftreten können.
-
-```{r}
-library(glmpca)
+# Generate df
+GS_genes <- data.frame(Gene_set_name, Genes_per_Gene_set)
+head(GS_genes)
 ```
 
 ```{r}
-gpca <- glmpca(counts(dds), L=2)
-gpca.dat <- gpca$factors
-gpca.dat$condition <- dds$condition
+knitr::kable(GS_genes,
+caption = "Table with kable")
 ```
 
-```{r fig.asp = 0.5, fig.width = 12}
-ggplot(gpca.dat, aes(x = dim1, y = dim2, color = condition)) +
-  geom_point(size =2) + coord_fixed() + ggtitle("glmpca - Generalized PCA")
-```
-
-Die Proben des Normalgewebes (rot) unterscheiden sich voneinander auf der y-Achse (dim2). Sie unterscheiden sich vom Tumorgewebe (blau) auf der x-Achse (dim1). Eine Probe liegt in der Mitte zwischen beiden Gruppen, es gibt einen outlier bei den Tumor-Samples in dim2.
-
-Die rlog-transformierten Daten können ebenfalls verwendet werden mittels der `plotPCA` Funktion des `FactorMineR` Package:
-
-```{r fig.asp = 0.5, fig.width = 12}
-pcaData <- plotPCA(rld, intgroup=c("condition"), returnData=TRUE)
-percentVar <- round(100 * attr(pcaData, "percentVar"))
-
-ggplot(pcaData, aes(PC1, PC2, color=condition)) +
-  geom_point(size=3) +
-  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
-  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
-  coord_fixed()
-```
-
-## Perform differential expression analysis
-
+3.	Prepare a figure (e.g. barplot) showing the number of genes per gene set.
 ```{r}
-# DIFFERENTIAL ANALYSIS
-dds <- DESeq(dds, test = "Wald", fitType = "mean")
-result_dss = results(dds)
+#Transform data frame to remove "Hallmark" string
+GS_genes$Gene_set_name <- 
+  gsub("HALLMARK_","",as.character(GS_genes$Gene_set_name))
+head(GS_genes)
 ```
 
 ```{r}
-summary(result_dss)
+#Change factor lavels to order according to no of genes per Gene set
+GS_genes$Gene_set_name <- factor(GS_genes$Gene_set_name, 
+                                 levels = GS_genes$Gene_set_name
+                                 [order(GS_genes$Genes_per_Gene_set)])
 ```
 
-### Data Frame transformations
-
+```{r fig.height=10, fig.width = 5, fig.align='center', fig.cap=Genes per gene-set}
+#Create the Bar Plot
+ggplot(GS_genes, aes(x = Gene_set_name, y = Genes_per_Gene_set)) + 
+  theme_bw() + 
+  geom_bar(stat = "identity") +
+  coord_flip()
+```
+4. Convert the hallmark `data.frame` into a named list (to be used as “gsets” parameter with gage)
+(For this, the `readList` function was used from the downloaded `.gmt` files. This is probably not the most elegant way but it served its purpose I hope.)
 ```{r}
-#Transform results to Data-Frame
-results.deseq2 <- as.data.frame(result_dss)
+#Read in Database information as List
+hallmarks_symbols <- readList("h.all.v7.4.symbols.gmt")
+hallmarks_entrez <- readList("h.all.v7.4.entrez.gmt")
 ```
 
+5. Do the same with the `Reactome` database
 ```{r}
-# Apply new column "Gene" from row Names
-results.deseq2$Gene <- row.names(results.deseq2)
-head(results.deseq2)
+reactome_entrez <- readList("c2.cp.reactome.v7.4.entrez.gmt")
+reactome_symbol <- readList("c2.cp.reactome.v7.4.symbols.gmt")
 ```
 
+
+### Part 2: 
+
+Now we are preparing the gene-expression data.
+
+1.	Load the hallmark list you have created
 ```{r}
-#Split both Values in the Gene column to "Gene_Name" and "Entrez_ID".
-results.deseq2 <- separate(results.deseq2, Gene, sep = "__", into = c("Gene_Name", "Entrez_ID"))
-head(results.deseq2)
+hallmark_list <- hallmarks_entrez
 ```
 
+2.	Load the log2 TPM matrix.
 ```{r}
-# set Gene_Name to first column
-results.deseq2 <- results.deseq2[, c(7,8,1,2,3,4,5,6)]
-head(results.deseq2)
-```
-
-```{r}
-# Order results by adjusted p value
-results.deseq2.tmp <- results.deseq2[!is.na(results.deseq2$padj),]
-results.deseq2.sig <- results.deseq2.tmp[which(results.deseq2.tmp$padj < 0.1),]
-results.deseq2.sig.sort <- results.deseq2.sig[order(results.deseq2.sig$padj, decreasing = F),]
-head(results.deseq2.sig.sort)
-```
-
-Generate a xlsx file for all DEG
-```{r}
-library(openxlsx)
-```
-
-```{r}
-#Write xlsx file
-write.xlsx(results.deseq2.sig.sort, file = "KICH_NormalvsTumor_DESeq.xlsx", asTable = F, firstRow = T, headerStyle = createStyle(textDecoration = 'bold'), keepNA = F, rowNames = F, overwrite = T)
+expr.data <- read.delim("TCGA_GBM_log2TPM.txt")
+expr.data <- as.data.frame(expr.data)
+head(expr.data)
 ```
 
 ```{r}
-# Order values by 2 FOLD change
-results.deseq2.sig.up <-  results.deseq2.sig.sort[order(results.deseq2.sig.sort$log2FoldChange
-, decreasing = T),]
-head(results.deseq2.sig.up)
+#convert the data.frame into a matrix as to speed up the computing
+expr.data.matr <- as.matrix(expr.data)
+str(expr.data.matr)
+```
+3. Check the overlap between the database and the genes within the RNA matrix
+
+```{r}
+head(hallmark_list[[1]]); head(rownames(expr.data.matr))
+```
+gene ID types are the same in the gene sets `hallmark_list` and expression data`expr.data.mat`
+
+4.  Create an annotation `data.frame` from the column names of the RNA matrix (i.e. assign each sample to either primary, recurrent or normal condition).
+```{r}
+my_sample_col <- data.frame(condition = rep(c("Normal", "Primary", "Recurrent"), 
+                                            c(5,5,5)))
+row.names(my_sample_col) <- colnames(expr.data)
+my_sample_col
 ```
 
 ```{r}
-tail(results.deseq2.sig.up)
+# Check if all rownames from annotated sample column are equal to colnames of the expression data
+all(rownames(my_sample_col) == colnames(expr.data))
 ```
-
-Determine which genes are up- and down-regulated (log2FC > 2 or < -2, respectively)
 ```{r}
-#Upregulated Genes (2 Fold Change)
-results.deseq2.sig.up.2FC <- results.deseq2.sig.up[results.deseq2.sig.up$log2FoldChange > 2,]
-#Downregulated Genes (-2 Fold Change)
-results.deseq2.sig.down.2FC.tmp <- results.deseq2.sig.up[results.deseq2.sig.up$log2FoldChange < -2,]
-results.deseq2.sig.down.2FC <- results.deseq2.sig.down.2FC.tmp[order(results.deseq2.sig.down.2FC.tmp$log2FoldChange, decreasing = F),]
+head(expr.data)
 ```
 
-Export results
+
+5.	Calculate the average log2 foldchange between primary and normal, recurrent and normal, recurrent and primary.
 ```{r}
-#Write xlsx of DEG up- and downregulated (with two sheets)
-list_of_datasets <- list("upregulated" = results.deseq2.sig.up.2FC, "downregulated" = results.deseq2.sig.down.2FC)
-write.xlsx(list_of_datasets, file = "KICH_NormalvsTumor_DESeq_up_down.xlsx", asTable = F, firstRow = T, headerStyle = createStyle(textDecoration = 'bold'), keepNA = F, rowNames = F, overwrite = T)
-```
-
-## Volcano Plot
-
-### Plot basic Volcano 
-
-This was done using the `EnhancedVolcano` Package.
-
-```{r}
-library(EnhancedVolcano)
-```
-
-```{r fig.asp = 1.2, fig.width = 12}
-p <- EnhancedVolcano(results.deseq2,
-    lab = results.deseq2$Gene_Name,
-    title = 'Normal vs. Tumor DESeq2 results',
-    subtitle = "Differential expression",
-    pointSize = 2.0,
-    labSize = 4.0,
-    FCcutoff = 2.0,
-    drawConnectors = TRUE,
-    widthConnectors = 0.5,
-    boxedLabels = TRUE,
-    pCutoff = 10e-32,
-    labFace = 'bold',
-    caption = bquote(~Log[2]~ "fold change cutoff, 2; p-value cutoff, 10e-32"),
-    legendPosition = "right",
-    legendLabSize = 14,
-    x = 'log2FoldChange',
-    y = 'pvalue')
-p
-```
-
-
-KCNU1 is highly upregulated in the Tumor samples.
-
-## Heatmaps
-
-### Create a list with top 20 up-and downregulated genes
-```{r}
-#Create date frame with significant genes (40)
-total_up_down <- rbind(results.deseq2.sig.up.2FC[1:20,], results.deseq2.sig.down.2FC[1:20,])
-#Add Gene column (used later to merge with count matrix)
-total_up_down$Gene <- row.names(total_up_down)
-total_up_down <- total_up_down %>% relocate(Gene, .before = Gene_Name)
-head(total_up_down)
-```
-
-### Normalized count matrix
-
-```{r}
-# Transform count matrix to Data frame
-heatmap_norm.df <- as.data.frame(dds.counts)
-# Change Colum Labels
-names(heatmap_norm.df) <- ann$condition
-# Generate unique columnames
-colnames(heatmap_norm.df) <- make.unique(names(heatmap_norm.df))
-# add rownames as column
-heatmap_norm.df$Gene <- row.names(heatmap_norm.df)
-heatmap_norm.df <- heatmap_norm.df %>% relocate(Gene, .before = Normal)
-head(heatmap_norm.df)
-```
-
-#### Merge
-
-```{r}
-# Merge total data frame and heatmap_norm.df by Gene column
-data_frame_merge <- semi_join(heatmap_norm.df, total_up_down, 
-                          by = 'Gene', all = F)
-data_frame_merge <- data_frame_merge[-c(1)]
-head(data_frame_merge)
-```
-
-#### Visualization
-
-```{r}
-library(pheatmap)
-```
-
-```{r fig.asp = 1.2, fig.width = 12}
-#Convert to Matrix
-data_frame_merge <- as.matrix(data_frame_merge)
-#Plot
-data_frame_merge %>% pheatmap(cluster_cols = F)
-```
-
-##### Log2 transformed
-
-```{r fig.asp = 1.2, fig.width = 12}
-## Log2 tranformation
-heatmap_data_log2 <- data_frame_merge %>% log2()
-# Check if there are any INF values adn remove them
-heatmap_data_log2[is.infinite(heatmap_data_log2)] <- 0 
-#Plot log2 heatmap
-heatmap_data_log2 %>% pheatmap(cluster_cols = F)
-```
-
-##### Substract Mean
-
-```{r fig.asp = 1.2, fig.width = 12}
-## Substract the mean
-heatmap_data_meanSubstract <- heatmap_data_log2 - rowMeans((heatmap_data_log2))
-#Plot  heatmap
-heatmap_data_meanSubstract %>% pheatmap(cluster_cols = F)
-```
-
-##### zScores (see also rlog transformed scaled)
-
-```{r fig.asp = 1.2, fig.width = 12}
-heatmap_data_zscores <- heatmap_data_meanSubstract/rowSds(as.matrix(heatmap_data_log2))
-
-heatmap_data_zscores %>%
-  pheatmap(cluster_cols = F)
-```
-
-### rlog transformed count matrix
-
-Die rlog Transformation ist eine Art der Count data transformation. Ähnlich wie bei der `log2()` Funktion, werden die count Values transformiert, aber es werden keine negativen Werte ausgegeben und die Werte werden zur library size normalisiert.
-
-> regularized logarithm or rlog, which incorporates a prior on the sample differences (Love, Huber, and Anders 2014). [...] produce transformed data on the log2 scale which has been normalized with respect to library size or other normalization factors.
-
-Quelle: <https://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#data-transformations-and-visualization>
-
-```{r}
-# Transform to count matrix to Data frame
-heatmap_rlog.df <- as.data.frame(rlds)
-# Change Colum Labels
-names(heatmap_rlog.df) <- ann$condition
-colnames(heatmap_rlog.df) <- make.unique(names(heatmap_rlog.df))
-# add rownames as column
-heatmap_rlog.df$Gene <- row.names(heatmap_rlog.df)
-heatmap_rlog.df <- heatmap_rlog.df %>% relocate(Gene, .before = Normal)
-head(heatmap_rlog.df)
+#calculate the mean for each gene per group
+normal_mean <- apply(expr.data[,1:5],1, mean)
+primary_mean <- apply(expr.data[,6:10],1, mean)
+recurrent_mean <- apply(expr.data[,11:15],1, mean)
 ```
 
 ```{r}
-# Merge total data frame and heatmap_norm.df
-data_frame_merge_rlog <- semi_join(heatmap_rlog.df, total_up_down, 
-                          by = 'Gene', all = F)
-data_frame_merge_rlog  <- data_frame_merge_rlog[-c(1)]
-head(data_frame_merge_rlog)
+#calculate the fold change between the groups
+## Normal/Primary
+foldchange_nor_primary <- normal_mean - primary_mean 
+## Normal/Recurrent
+foldchange_nor_recurrent <- normal_mean - recurrent_mean
+## Primary/Recurrent
+foldchange_pri_recurrent <- primary_mean - recurrent_mean
 ```
-
-##### Heatmap of rlog transformed values
-
-```{r fig.asp = 1.2, fig.width = 12}
-#Convert to Matrix
-data_frame_merge_rlog <- as.matrix(data_frame_merge_rlog)
-#Plot
-data_frame_merge_rlog %>% pheatmap(cluster_cols = F)
-```
-
-### rlog scaled
-
-Erzeugung einer rlog_scaled Matrix:
 
 ```{r}
-data_frame_merge_rlog_scaled <- t(scale(t(data_frame_merge_rlog), center = T, scale =T))
+hist(foldchange_nor_primary, 
+     xlab = "log2 Fold Change (Normal vs Primary)")
 ```
-
-Erzeugung der Heatmap
-
-```{r fig.asp = 1.2, fig.width = 12}
-data_frame_merge_rlog_scaled  %>%
-  pheatmap(cluster_cols = F)
-```
-
-Scaling (oder Standardization) transformiert die Daten, der Mean/Durchschnitt wird auf 0 und die Standard-Abweichung auf 1 gesetzt. Dies entspricht den z scores. Dies eignet sich be Werten mit hoher Varianz und Extremweren, da diese sonst die Heatmap dominieren (z.B. UMOD Gen).
-
-## Citations
 
 ```{r}
-citation("DESeq2")
-citation("EnhancedVolcano")
+hist(foldchange_nor_recurrent, 
+     xlab = "log2 Fold Change (Normal vs Recurrent)")
 ```
 
-## Session info
+```{r}
+hist(foldchange_pri_recurrent, 
+     xlab = "log2 Fold Change (Primary vs Recurrent)")
+```
+
+```{r}
+#Add log2FC for normal/tumor
+expr.data.fc <- expr.data
+expr.data.fc$log2FC_nor_pri <- foldchange_nor_primary
+expr.data.fc$log2FC_nor_rec <- foldchange_nor_recurrent
+expr.data.fc$log2FC_pri_recurrent <- foldchange_pri_recurrent
+expr.data.fc <- rownames_to_column(expr.data.fc, var = "gene_ID")
+# add Gene_Symbol
+expr.data.fc$Gene_Symbol <- eg2sym(expr.data.fc$gene_ID) 
+head(expr.data.fc)
+```
+
+
+```{r}
+#Select genes, which are upregulated in expression matrix (normal vs. primary)
+genes.up_pri_no <- subset(expr.data.fc, 
+                          log2FC_nor_pri > 0, 
+                          select = c("Gene_Symbol", "gene_ID"))
+head(genes.up_pri_no)
+```
+
+```{r}
+#Select genes, which are downregulated in expxression matrix (normal vs. primary)
+genes.down_pri_no <- subset(expr.data.fc, 
+                            log2FC_nor_pri < 0,
+                            select = c("Gene_Symbol", "gene_ID"))
+head(genes.down_pri_no)
+```
+
+```{r}
+#Select genes, which are up/downregulated in epxression matrix (normal vs. recurrent)
+## Upregulated
+genes.up_nor_rec <- subset(expr.data.fc, 
+                           log2FC_nor_rec >0, 
+                           select = c("Gene_Symbol", "gene_ID"))
+## down
+genes.down_nor_rec <- subset(expr.data.fc, 
+                           log2FC_nor_rec <0, 
+                           select = c("Gene_Symbol", "gene_ID"))
+#Select genes, which are up/downregulated in epxression matrix (primary vs. recurrent)
+## Upregulated
+genes.up_pri_rec <- subset(expr.data.fc, 
+                           log2FC_pri_recurrent >0, 
+                           select = c("Gene_Symbol", "gene_ID"))
+## down
+genes.down_pri_rec <- subset(expr.data.fc, 
+                           log2FC_pri_recurrent <0, 
+                           select = c("Gene_Symbol", "gene_ID"))
+```
+
+
+6. Use `Gage` (unpaired test) to identify differentially UP- and DOWN-regulated gene-sets (using `Hallmark` and `Reactome` gene-sets separately). Make the following comparisons: primary vs. normal, recurrent vs. normal, recurrent vs. primary.
+```{r}
+#Definition of gage inputs
+cn <- colnames(expr.data)
+normal <- grep('Normal',cn, ignore.case =T)
+primary <- grep('Primary',cn, ignore.case =T)
+recurrent <- grep('Recurrent',cn, ignore.case =T)
+```
+
+```{r}
+#Hallmarks
+gage_H_pri_no = gage(exprs = expr.data, 
+                     gsets = hallmark_list, 
+                     set.size=c(10,500), 
+                     same.dir = TRUE, 
+                     compare ="unpaired", 
+                     ref = normal, 
+                     samp = primary) 
+
+gage_H_rec_no = gage(exprs = expr.data, 
+                     gsets = hallmark_list, 
+                     set.size=c(10,500), 
+                     same.dir = TRUE, 
+                     compare ="unpaired", 
+                     ref = normal, 
+                     samp = recurrent)
+
+gage_H_pri_rec = gage(exprs = expr.data, 
+                      gsets = hallmark_list, 
+                      set.size=c(10,500), 
+                      same.dir = TRUE, 
+                      compare ="unpaired", 
+                      ref = primary, 
+                      samp = recurrent)
+```
+
+```{r}
+#Reactome database
+gage_R_pri_no = gage(exprs = expr.data, 
+                     gsets = reactome_entrez, 
+                     set.size=c(10,500), 
+                     same.dir = TRUE, 
+                     compare ="unpaired", 
+                     ref = normal, 
+                     samp = primary) 
+
+gage_R_rec_no = gage(exprs = expr.data, 
+                     gsets = reactome_entrez, 
+                     set.size=c(10,500), 
+                     same.dir = TRUE, 
+                     compare ="unpaired", 
+                     ref = normal, 
+                     samp = recurrent)
+
+gage_R_pri_rec = gage(exprs = expr.data, 
+                      gsets = reactome_entrez, 
+                      set.size=c(10,500), 
+                      same.dir = TRUE, 
+                      compare ="unpaired", 
+                      ref = primary, 
+                      samp = recurrent)
+```
+
+
+```{r}
+#Determine the significant gene sets by using the sigGeneSetFunction.
+no_pri_H.sig<-sigGeneSet(gage_H_pri_no, cutoff = 0.1)
+no_rec_H.sig<-sigGeneSet(gage_H_rec_no, cutoff = 0.1)
+pri_rec_H.sig<-sigGeneSet(gage_H_pri_rec, cutoff = 0.1)
+#Do the same for the reactome dataset
+no_pri_R.sig<-sigGeneSet(gage_R_pri_no, cutoff = 0.1)
+no_rec_R.sig<-sigGeneSet(gage_R_rec_no, cutoff = 0.1)
+pri_rec_R.sig<-sigGeneSet(gage_R_pri_rec, cutoff = 0.1)
+```
+
+```{r}
+#Upregulated Gene sets Normal vs. Primary as data frame
+df_no_pri_H.sig <- as.data.frame(no_pri_H.sig$greater)
+df_no_pri_H.sig <- subset(df_no_pri_H.sig,
+                          select = c("p.val","q.val","set.size"))
+head(df_no_pri_H.sig)
+```
+
+
+```{r}
+#Create annotated Hallmark list
+library(purrr)
+#Upregulated genes
+intersect_up_genes <- function(x) intersect(x, up_genes)
+annotated_hallmarks_up <- map(hallmark_list, intersect_up_genes)
+#Downregulated genes
+intersect_down_genes <- function(x) intersect(x, down_genes)
+annotated_hallmarks_down  <- map(hallmark_list, intersect_down_genes)
+```
+
+```{r}
+from_list <- t(map_dfc(annotated_hallmarks_up, ~length(.)))
+nb_column <- as.data.frame(from_list)
+colnames(nb_column)[colnames(nb_column ) == "V1"] <- "nb"
+nb_column 
+```
+
+
+
+
+7. Annotate the significantly regulated gene-sets with genes (entrez IDs and symbols). Check org.Hs.eg.db R package.
+```{r}
+library("org.Hs.eg.db")
+```
+
+```{r}
+#3 most upregulated pathways in Hallmarks data set
+rownames(no_pri_H.sig$greater)[1:3]
+```
+
+```{r}
+head(rownames(expr.data))
+```
+
+```{r}
+expr.data.sym<-expr.data
+```
+
+```{r}
+# Convert Entrez ID to Gene Symbol
+data(egSymb)
+expr.data.sym <- eg2sym(rownames(expr.data.sym))
+head(expr.data.sym)
+```
+
+
+```{r}
+#Upregulated genes Normal vs. Tumor
+#add column Gene_ID
+new_df_2 <- rownames_to_column(genes_normal_primary_up, var="Gene_ID") 
+# add Gene_Symbol
+new_df_2$Gene_Symbol <- eg2sym(new_df_2$Gene_ID) 
+new_df_2
+```
+
+
+```{r}
+#Create a data frame from the hallmark_list
+n_h_gene_set
+```
+
+
+
+
+
+
+```{r}
+gs <- unique(unlist(kegg.gs[rownames(gse16873.kegg.p$greater)[1:3]]))
+essData=essGene(gs, gse16873, ref =hn, samp =dcis)
+head(essData, 4)
+```
+
+8.	Visualise the most significant gene-sets (e.g. using barplots or heatmaps)
+```{r}
+for (gs in rownames(gse16873.kegg.p$greater)[1:3]) {
++ outname = gsub(" |:|/", "_", substr(gs, 10, 100))
++ outname = paste(outname, "all", sep=".")
++ geneData(genes = kegg.gs[[gs]], exprs = gse16873, ref = hn,
++ samp = dcis, outname = outname, txt = T, heatmap = T,
++ Colv = F, Rowv = F, dendrogram = "none", limit = 3, scatterplot = T)
++ }
+```
+
+
+
+
+```{r}
+#write.table(gage_pri_no$greater, file = "gage_pri_no.greater.txt", sep = "\t")
+```
+
+```{r}
+#write.table(rbind(gage_pri_no$greater, gage_pri_no$less, file = "gage_pri_no2.txt", sep = "\t"))
+```
+
+
+
+
+####### Enrichment ######
+
+GSEA
+1. Detect general trend without setting limit on differential genes
+2. Kolmogorov-Smirnov-Test, multiple hypotheses testing correction 
+3. MSigDB helps finding other related studies
+
+GAGE (Generally Applicable Gene-set Enrichment) [@GAGE]
+1. applies to datasets with any number of sample and is based on a parametric gene randomization procedure [@GAGE]
+2. Uses log-based fold changes as per gene statistics
+3. assumes gene set comes from a different distribution than the background and unses two-sample t-test to account for the gene set specificic variance as well as the background variance
+4. adjusts for different experimental designs and sample sizes by decomposing roup-on group comparison into one-on-one comparisons between samples from different groups
+- derives a global p-value using a meta-test on the p-values from these comparisons for each gene set
+5. separates experimentally perturbed gene sets (from literature, single directions) and canonical pathways (from pathway databases, both directions)
+
+
+
+### Run GAGE algorithm
+
+
+
+#Define significant genes
+
+
+## Barplots
+
+
+## Heatmap
+
+
+## Jaccard graph
+
+
+
+
+# Useful links:
+## Gage
+<http://bioconductor.org/packages/release/bioc/html/gage.html>
+## msigdbr
+<https://cran.r-project.org/web/packages/msigdbr/vignettes/msigdbr-intro.html>
+## single cell RNA seq GSEA
+<https://www.nature.com/articles/s41467-020-15298-6>
+
+
+#### Data set description
+
+Data retrieved from the [TCBA database](https://www.cancer.gov/about-nci/organization/ccg/research/structural-genomics/tcga) and includes log2-normalized read counts of RNA-sequencing samples from Glioblastoma multiforme (GBM) patients or healthy control tissues. 
+
+Tumor tissues were classified as "Primary" or "Recurrent". Control tissues were classified as being "Normal.".
+
+I used the updated curated gene set collection Hallmark (H) from the [MSigDB databse](https://www.gsea-msigdb.org/gsea/msigdb/) (@Libzerzon et al.2015).
+
+# Citations
+
+```{r}
+citation("gage")
+citation("org.Hs.eg.db")
+ciation("misgbdr")
+```
+
+# Session info
 
 ```{r}
 sessionInfo()
