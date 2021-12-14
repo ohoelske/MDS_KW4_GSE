@@ -29,6 +29,7 @@ BiocManager::install(version = "3.14")
 
 ```{r, message=FALSE,warning=FALSE}
 #install.packages("msigdbr")
+#install.packages("openxlsx")
 ```
 
 ## Load libraries
@@ -70,7 +71,6 @@ r_gene_set <- msigdbr(species = "human",
                       category = "C2",
                       subcategory = "CP:REACTOME")
 head(h_gene_set)
-head(r_gene_set)
 ```
 2.	Look at Hallmark: check the number of gene-sets, number of genes per gene set…
 
@@ -82,6 +82,13 @@ n_h_gene_set <- h_gene_set %>%
 # Count no of rows = gene sets
 nrow(n_h_gene_set)
 ```
+
+```{r}
+n_h_gene_set
+```
+
+
+
 The Hallmark Datasets contains 50 Gene-sets
 ```{r}
 #Extract the Gene-set names 
@@ -91,7 +98,7 @@ head(Gene_set_name)
 
 ```{r}
 #Define no of Genes per Gene set by using the purrr::map function
-Genes_per_Gene_set <- map_int(my_list, ~nrow(.))
+Genes_per_Gene_set <- map_int(n_h_gene_set$data, ~nrow(.))
 ```
 
 ```{r}
@@ -102,7 +109,7 @@ head(GS_genes)
 
 ```{r}
 knitr::kable(GS_genes,
-caption = "Table with kable")
+caption = "Genes per Hallmark Geneset")
 ```
 
 3.	Prepare a figure (e.g. barplot) showing the number of genes per gene set.
@@ -120,13 +127,33 @@ GS_genes$Gene_set_name <- factor(GS_genes$Gene_set_name,
                                  [order(GS_genes$Genes_per_Gene_set)])
 ```
 
-```{r fig.height=10, fig.width = 5, fig.align='center', fig.cap=Genes per gene-set}
+```{r fig.height=15, fig.width = 10, fig.align='center', fig.cap='Genes per gene-set'}
 #Create the Bar Plot
-ggplot(GS_genes, aes(x = Gene_set_name, y = Genes_per_Gene_set)) + 
+x <- ggplot(GS_genes, aes(x = Gene_set_name, y = Genes_per_Gene_set)) + 
   theme_bw() + 
-  geom_bar(stat = "identity") +
+  geom_bar(stat = "identity", fill="#E69F00") +
   coord_flip()
+x + ggtitle("Genes per gene set of the Hallmark Gene set") +
+  xlab("HALLMARK Gene set") +
+  ylab("Genes per Gene set")
 ```
+```{r, warning=FALSE}
+#Save as PDF
+ggsave(
+  file = "GenesPerGeneset.pdf",
+  plot = last_plot(),
+  path = NULL,
+  scale = 1,
+  width = 10,
+  height = 15,
+  units = "in",
+  dpi = "retina",
+  limitsize = TRUE,
+  bg = NULL,
+)
+```
+
+
 4. Convert the hallmark `data.frame` into a named list (to be used as “gsets” parameter with gage)
 (For this, the `readList` function was used from the downloaded `.gmt` files. This is probably not the most elegant way but it served its purpose I hope.)
 ```{r}
@@ -182,6 +209,7 @@ my_sample_col
 # Check if all rownames from annotated sample column are equal to colnames of the expression data
 all(rownames(my_sample_col) == colnames(expr.data))
 ```
+
 ```{r}
 head(expr.data)
 ```
@@ -227,7 +255,12 @@ expr.data.fc$log2FC_nor_pri <- foldchange_nor_primary
 expr.data.fc$log2FC_nor_rec <- foldchange_nor_recurrent
 expr.data.fc$log2FC_pri_recurrent <- foldchange_pri_recurrent
 expr.data.fc <- rownames_to_column(expr.data.fc, var = "gene_ID")
+```
+
+```{r}
 # add Gene_Symbol
+library("gage")
+data(egSymb)
 expr.data.fc$Gene_Symbol <- eg2sym(expr.data.fc$gene_ID) 
 head(expr.data.fc)
 ```
@@ -239,6 +272,7 @@ genes.up_pri_no <- subset(expr.data.fc,
                           log2FC_nor_pri > 0, 
                           select = c("Gene_Symbol", "gene_ID"))
 head(genes.up_pri_no)
+up_genes <- genes.up_pri_no$gene_ID
 ```
 
 ```{r}
@@ -247,6 +281,7 @@ genes.down_pri_no <- subset(expr.data.fc,
                             log2FC_nor_pri < 0,
                             select = c("Gene_Symbol", "gene_ID"))
 head(genes.down_pri_no)
+down_genes <- genes.down_pri_no$gene_ID
 ```
 
 ```{r}
@@ -346,14 +381,21 @@ no_rec_R.sig<-sigGeneSet(gage_R_rec_no, cutoff = 0.1)
 pri_rec_R.sig<-sigGeneSet(gage_R_pri_rec, cutoff = 0.1)
 ```
 
+
 ```{r}
-#Upregulated Gene sets Normal vs. Primary as data frame
+#UpregulatesGene sets Normal vs. Primary as data frame
 df_no_pri_H.sig <- as.data.frame(no_pri_H.sig$greater)
 df_no_pri_H.sig <- subset(df_no_pri_H.sig,
                           select = c("p.val","q.val","set.size"))
 head(df_no_pri_H.sig)
 ```
-
+```{r}
+#DownregulatesGene sets Normal vs. Primary as data frame
+df_no_pri_H.sig.down <- as.data.frame(no_pri_H.sig$less)
+df_no_pri_H.sig.down <- subset(df_no_pri_H.sig.down,
+                          select = c("p.val","q.val","set.size"))
+head(df_no_pri_H.sig.down)
+```
 
 ```{r}
 #Create annotated Hallmark list
@@ -367,93 +409,159 @@ annotated_hallmarks_down  <- map(hallmark_list, intersect_down_genes)
 ```
 
 ```{r}
-from_list <- t(map_dfc(annotated_hallmarks_up, ~length(.)))
-nb_column <- as.data.frame(from_list)
-colnames(nb_column)[colnames(nb_column ) == "V1"] <- "nb"
-nb_column 
+#UP df
+up_list <- t(map_dfc(annotated_hallmarks_up, ~length(.)))
+up_df <- as.data.frame(up_list)
+colnames(up_df)[colnames(up_df ) == "V1"] <- "nb"
+up_df 
+```
+
+```{r}
+library(tibble)
+ned_df_2 <- rownames_to_column(df_no_pri_H.sig)
+ned_df_3 <- rownames_to_column(up_df)
+```
+
+```{r}
+#Create the final table with upregulated genes
+final_df_up <- inner_join(ned_df_2, ned_df_3, by = "rowname", copy = FALSE)
+colnames(final_df_up )[1] <- "Gene_set"
+final_df_up$log10p.val <- -log10(final_df_up$p.val)
+head(final_df_up)
+```
+```{r}
+knitr::kable(final_df_up,
+caption = "Significantly upregulated Gene sets (Normal / Tumor)")
+```
+
+Perform for downregulated genes
+```{r}
+#down df
+down_list <- t(map_dfc(annotated_hallmarks_down, ~length(.)))
+down_df <- as.data.frame(down_list)
+colnames(down_df)[colnames(down_df ) == "V1"] <- "nb"
+down_df 
+```
+
+```{r}
+ned_df_4 <- rownames_to_column(df_no_pri_H.sig.down)
+ned_df_5 <- rownames_to_column(down_df)
+```
+
+```{r}
+#Create the final table with downregulated genes
+final_df_down <- inner_join(ned_df_4, ned_df_5, by = "rowname", copy = FALSE)
+colnames(final_df_down)[1] <- "Gene_set"
+final_df_down$log10p.val <- -log10(final_df_down$p.val)
+```
+
+```{r}
+knitr::kable(final_df_down,
+caption = "Significantly downregulated Gene sets (Normal / Tumor)")
+```
+
+Export results
+```{r}
+#library opelxlsx
+library(openxlsx)
+
+#Write xlsx of DEG up- and downregulated (with two sheets)
+list_of_datasets <- list("upregulated" = final_df_up, 
+                         "downregulated" = final_df_down)
+
+write.xlsx(list_of_datasets, 
+           file = "Sig_UP_DOWN_Gene_sets_Tumor_Normal.xlsx", 
+           asTable = F, 
+           firstRow = T, 
+           headerStyle = createStyle(textDecoration = 'bold'), 
+           keepNA = F, 
+           rowNames = F, 
+           overwrite = T)
 ```
 
 
 
 
 7. Annotate the significantly regulated gene-sets with genes (entrez IDs and symbols). Check org.Hs.eg.db R package.
-```{r}
-library("org.Hs.eg.db")
-```
 
-```{r}
-#3 most upregulated pathways in Hallmarks data set
-rownames(no_pri_H.sig$greater)[1:3]
-```
-
-```{r}
-head(rownames(expr.data))
-```
-
-```{r}
-expr.data.sym<-expr.data
-```
-
-```{r}
-# Convert Entrez ID to Gene Symbol
-data(egSymb)
-expr.data.sym <- eg2sym(rownames(expr.data.sym))
-head(expr.data.sym)
-```
-
-
-```{r}
-#Upregulated genes Normal vs. Tumor
-#add column Gene_ID
-new_df_2 <- rownames_to_column(genes_normal_primary_up, var="Gene_ID") 
-# add Gene_Symbol
-new_df_2$Gene_Symbol <- eg2sym(new_df_2$Gene_ID) 
-new_df_2
-```
-
-
-```{r}
-#Create a data frame from the hallmark_list
-n_h_gene_set
-```
-
-
-
-
-
-
-```{r}
-gs <- unique(unlist(kegg.gs[rownames(gse16873.kegg.p$greater)[1:3]]))
-essData=essGene(gs, gse16873, ref =hn, samp =dcis)
-head(essData, 4)
-```
+#### To be continued
 
 8.	Visualise the most significant gene-sets (e.g. using barplots or heatmaps)
+
 ```{r}
-for (gs in rownames(gse16873.kegg.p$greater)[1:3]) {
-+ outname = gsub(" |:|/", "_", substr(gs, 10, 100))
-+ outname = paste(outname, "all", sep=".")
-+ geneData(genes = kegg.gs[[gs]], exprs = gse16873, ref = hn,
-+ samp = dcis, outname = outname, txt = T, heatmap = T,
-+ Colv = F, Rowv = F, dendrogram = "none", limit = 3, scatterplot = T)
-+ }
+#Change factor lavels to order according to no of genes per Gene set
+final_df_up$Gene_set <- factor(final_df_up$Gene_set, 
+                                 levels = final_df_up$Gene_set 
+                                 [order(final_df_up$log10p.val)])
 ```
 
 
+```{r fig.height=10, fig.width = 10, fig.align='center', fig.cap='Sign. upregulated Gene sets'}
+#Create the Bar Plot
+p <- ggplot(final_df_up, 
+       aes(x = Gene_set, y = log10p.val)) + 
+  theme_bw() + 
+  geom_bar(stat = "identity", fill = "#FF6666") +
+  coord_flip() 
+
+p + ggtitle ("Signficantly upregulated Gene sets (Normal vs Tumor") +
+  ylab("-log10pvalue")
+```
+
+```{r, warning=FALSE}
+#Save as PDF
+ggsave(
+  file = "Upregulated_genes_bar.pdf",
+  plot = last_plot(),
+  path = NULL,
+  scale = 1,
+  width = 10,
+  height = 15,
+  units = "in",
+  dpi = "retina",
+  limitsize = TRUE,
+  bg = NULL,
+)
+```
 
 
 ```{r}
-#write.table(gage_pri_no$greater, file = "gage_pri_no.greater.txt", sep = "\t")
+#Change factor lavels to order according to no of genes per Gene set
+final_df_down$Gene_set <- factor(final_df_down$Gene_set, 
+                                 levels = final_df_down$Gene_set 
+                                 [order(final_df_down$log10p.val)])
 ```
 
-```{r}
-#write.table(rbind(gage_pri_no$greater, gage_pri_no$less, file = "gage_pri_no2.txt", sep = "\t"))
+```{r fig.height=5, fig.width = 10, fig.align='center', fig.cap='Sign. downregulated Gene sets'}
+#Create the Bar Plot
+p_2 <- ggplot(final_df_down, 
+       aes(x = Gene_set, y = log10p.val)) + 
+  theme_bw() + 
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() 
+
+p_2 + ggtitle ("Signficantly downregulated Gene sets (Normal vs Tumor") +
+  ylab("-log10pvalue")
+```
+
+```{r, warning=FALSE}
+#Save as PDF
+ggsave(
+  file = "Downregulated_genes_bar.pdf",
+  plot = last_plot(),
+  path = NULL,
+  scale = 1,
+  width = 15,
+  height = 10,
+  units = "in",
+  dpi = "retina",
+  limitsize = TRUE,
+  bg = NULL,
+)
 ```
 
 
-
-
-####### Enrichment ######
+# Notes
 
 GSEA
 1. Detect general trend without setting limit on differential genes
@@ -469,35 +577,16 @@ GAGE (Generally Applicable Gene-set Enrichment) [@GAGE]
 5. separates experimentally perturbed gene sets (from literature, single directions) and canonical pathways (from pathway databases, both directions)
 
 
-
-### Run GAGE algorithm
-
-
-
-#Define significant genes
-
-
-## Barplots
-
-
-## Heatmap
-
-
-## Jaccard graph
-
-
-
-
 # Useful links:
-## Gage
+1. Gage
 <http://bioconductor.org/packages/release/bioc/html/gage.html>
-## msigdbr
+2. msigdbr
 <https://cran.r-project.org/web/packages/msigdbr/vignettes/msigdbr-intro.html>
-## single cell RNA seq GSEA
+3. single cell RNA seq GSEA
 <https://www.nature.com/articles/s41467-020-15298-6>
 
 
-#### Data set description
+#Data set description
 
 Data retrieved from the [TCBA database](https://www.cancer.gov/about-nci/organization/ccg/research/structural-genomics/tcga) and includes log2-normalized read counts of RNA-sequencing samples from Glioblastoma multiforme (GBM) patients or healthy control tissues. 
 
@@ -510,7 +599,7 @@ I used the updated curated gene set collection Hallmark (H) from the [MSigDB dat
 ```{r}
 citation("gage")
 citation("org.Hs.eg.db")
-ciation("misgbdr")
+citation("msigdbr")
 ```
 
 # Session info
